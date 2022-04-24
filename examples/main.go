@@ -10,15 +10,20 @@ import (
 	"github.com/alextanhongpin/dataloader"
 )
 
+type User struct {
+	Name string
+}
+
 func main() {
-	dl, close := dataloader.New(func(keys []string) (map[string]dataloader.Result, error) {
+	fmt.Println("Hello, world!")
+	dl, close := dataloader.New[string, User](func(keys []string) (map[string]dataloader.Result[User], error) {
 		fmt.Println("batchFn", keys)
 		if len(keys) == 1 {
 			return nil, errors.New("intended error")
 		}
-		m := make(map[string]dataloader.Result)
+		m := make(map[string]dataloader.Result[User])
 		for _, k := range keys {
-			m[k] = dataloader.Result{Data: k}
+			m[k] = dataloader.Result[User]{Data: User{k}}
 		}
 		return m, nil
 	}, 16*time.Millisecond)
@@ -36,11 +41,11 @@ func main() {
 			time.Sleep(sleep)
 
 			key := fmt.Sprint(rand.Intn(n / 2))
-			fmt.Println("fetching", key, dl.Load(key))
+			fmt.Println("fetching", key, dl.Load(key).Data.Name)
 		}(i)
 	}
 
-	res := dl.LoadMany([]string{"100", "200", "300"})
+	res := dl.LoadMany([]string{"100", "200", "300", "100", "200", "300"})
 	fmt.Println("get many", res)
 
 	wg.Wait()
