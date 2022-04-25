@@ -160,6 +160,13 @@ func (l *Dataloader[K, T]) Load(key K) *Result[T] {
 	return &res
 }
 
+func (l *Dataloader[K, T]) Prime(key K, data T) {
+	l.cond.L.Lock()
+	l.data[key] = Result[T]{Data: data, dirty: true}
+	l.cond.L.Unlock()
+	l.cond.Broadcast()
+}
+
 func (l *Dataloader[K, T]) isFetching(key K) bool {
 	res, ok := l.data[key]
 	return !ok || !res.IsSet()

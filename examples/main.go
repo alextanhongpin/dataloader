@@ -15,8 +15,7 @@ type User struct {
 }
 
 func main() {
-	fmt.Println("Hello, world!")
-	dl, close := dataloader.New[string, User](func(keys []string) (map[string]dataloader.Result[User], error) {
+	dl, flush := dataloader.New(func(keys []string) (map[string]dataloader.Result[User], error) {
 		fmt.Println("batchFn", keys)
 		if len(keys) == 1 {
 			return nil, errors.New("intended error")
@@ -27,12 +26,15 @@ func main() {
 		}
 		return m, nil
 	}, 16*time.Millisecond)
-	defer close()
+	defer flush()
 
 	n := 100
 
 	var wg sync.WaitGroup
 	wg.Add(n)
+
+	dl.Prime("test", User{Name: "test"})
+	fmt.Println(dl.Load("test"))
 
 	for i := 0; i < n; i++ {
 		go func(i int) {
