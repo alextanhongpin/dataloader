@@ -14,41 +14,49 @@ type User struct {
 	Name string
 }
 
+func fetchUsers(keys []string) (map[string]dataloader.Result[User], error) {
+	fmt.Println("keys", keys)
+	if len(keys) == 1 {
+		return nil, errors.New("intended error")
+	}
+
+	m := make(map[string]dataloader.Result[User])
+	for _, k := range keys {
+		m[k] = dataloader.Resolve(User{k})
+	}
+
+	return m, nil
+}
+
 func main() {
-	dl, flush := dataloader.New(func(keys []string) (map[string]dataloader.Result[User], error) {
-		fmt.Println("batchFn", keys)
-		if len(keys) == 1 {
-			return nil, errors.New("intended error")
-		}
-		m := make(map[string]dataloader.Result[User])
-		for _, k := range keys {
-			m[k] = dataloader.Result[User]{Data: User{k}}
-		}
-		return m, nil
-	}, 16*time.Millisecond)
+	dl, flush := dataloader.New(fetchUsers)
 	defer flush()
 
 	n := 100
+	addDelay := true
 
 	var wg sync.WaitGroup
 	wg.Add(n)
 
-	dl.Prime("test", User{Name: "test"})
-	fmt.Println(dl.Load("test"))
-
 	for i := 0; i < n; i++ {
 		go func(i int) {
 			defer wg.Done()
-			sleep := time.Duration(rand.Intn(1000)) * time.Millisecond
-			time.Sleep(sleep)
+
+			if addDelay {
+				sleep := time.Duration(rand.Intn(1_000)) * time.Millisecond
+				time.Sleep(sleep)
+			}
 
 			key := fmt.Sprint(rand.Intn(n / 2))
-			fmt.Println("fetching", key, dl.Load(key).Data.Name)
+
+			result := dl.Load(key)
+			if result.Ok() {
+				fmt.Println("success", result.Data())
+			} else {
+				fmt.Println("failed", result.Error())
+			}
 		}(i)
 	}
-
-	res := dl.LoadMany([]string{"100", "200", "300", "100", "200", "300"})
-	fmt.Println("get many", res)
 
 	wg.Wait()
 }
