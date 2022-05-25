@@ -8,8 +8,8 @@ import (
 )
 
 var (
-	ErrUnresolved = errors.New("unresolved")
-	ErrNoResult   = errors.New("no result")
+	ErrRejected = errors.New("rejected")
+	ErrNoResult = errors.New("no result")
 )
 
 type Result[T any] struct {
@@ -30,6 +30,13 @@ func Reject[T any](err error) *Result[T] {
 		err:   err,
 		dirty: true,
 	}
+}
+
+func (r *Result[T]) Unwrap() (t T, err error) {
+	if r.IsZero() {
+		return t, ErrNoResult
+	}
+	return r.data, r.err
 }
 
 func (r *Result[T]) Data() (t T) {
@@ -154,7 +161,7 @@ func (l *Dataloader[K, T]) batch() {
 
 		val, ok := res[key]
 		if !ok {
-			l.data[key] = Reject[T](fmt.Errorf("%w: %v", ErrUnresolved, key))
+			l.data[key] = Reject[T](fmt.Errorf("%w: %v", ErrRejected, key))
 		} else {
 			l.data[key] = val
 		}
