@@ -51,39 +51,36 @@ func main() {
 
 	fmt.Println("fetch 1")
 	result := dl.Load("account-1")
-	if result.Ok() {
-		account := result.Data()
-		fmt.Println("success:", account, *account.Status)
-
-		account.ID = "override-id"
-		account.Data["hello"] = "world"
-		// Better practice: to avoid the map being mutated, perform a deep clone.
-		//account = account.Clone()
-		account.Status = &Status{Name: "success"}
-	} else {
-		fmt.Println("failed:", result.Error())
+	account, err := result.Unwrap()
+	if err != nil {
+		panic(err)
 	}
+	fmt.Println("success:", account, *account.Status)
+
+	account.ID = "override-id"
+	account.Data["hello"] = "world"
+	// Better practice: to avoid the map being mutated, perform a deep clone.
+	//account = account.Clone()
+	account.Status = &Status{Name: "success"}
 
 	fmt.Println()
 	fmt.Println("fetch 2")
 	result = dl.Load("account-1")
-	if result.Ok() {
-		account := result.Data()
-		delete(account.Data, "id")
-		fmt.Println("success:", account, *account.Status)
-	} else {
-		fmt.Println("failed:", result.Error())
+	account, err = result.Unwrap()
+	if err != nil {
+		panic(err)
 	}
+	delete(account.Data, "id")
+	fmt.Println("success:", account, *account.Status)
 
 	fmt.Println()
 	fmt.Println("fetch 3")
 	result = dl.Load("account-1")
-	if result.Ok() {
-		account := result.Data()
-		fmt.Println("success:", account, *account.Status)
-	} else {
-		fmt.Println("failed:", result.Error())
+	account, err = result.Unwrap()
+	if err != nil {
+		panic(err)
 	}
+	fmt.Println("success:", account, *account.Status)
 
 	// This library does not protect against mutation of reference object, due to
 	// the way caching is implemented.
