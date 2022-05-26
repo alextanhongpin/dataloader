@@ -18,14 +18,10 @@ func fetchOrderAggregate(loader *Loader, orderID string) *OrderAggregate {
 	go func() {
 		defer wg.Done()
 
-		orderResult := loader.Order.Load(orderID)
-		if orderResult.Ok() {
-			order := orderResult.Data()
+		if order, err := loader.Order.Load(orderID).Unwrap(); err == nil {
 			orderAggregate.Order = &order
 
-			shipmentResult := loader.Shipment.Load(order.ShipmentID)
-			if shipmentResult.Ok() {
-				shipment := shipmentResult.Data()
+			if shipment, err := loader.Shipment.Load(order.ShipmentID).Unwrap(); err == nil {
 				orderAggregate.Shipment = &shipment
 			}
 		}
@@ -34,14 +30,10 @@ func fetchOrderAggregate(loader *Loader, orderID string) *OrderAggregate {
 	go func() {
 		defer wg.Done()
 
-		addressResult := loader.Address.Load(orderID)
-		if addressResult.Ok() {
-			address := addressResult.Data()
+		if address, err := loader.Address.Load(orderID).Unwrap(); err == nil {
 			orderAggregate.Address = &address
 
-			countryResult := loader.Country.Load(address.CountryID)
-			if countryResult.Ok() {
-				country := countryResult.Data()
+			if country, err := loader.Country.Load(address.CountryID).Unwrap(); err == nil {
 				orderAggregate.Address.Country = &country
 			}
 		}
@@ -64,8 +56,7 @@ func main() {
 		i := i
 		tasks[i] = func() *dataloader.Result[OrderAggregate] {
 			orderAggregate := fetchOrderAggregate(loader, fmt.Sprintf("order-%d", i))
-			result := dataloader.Resolve(*orderAggregate)
-			return &result
+			return dataloader.Resolve(*orderAggregate)
 		}
 	}
 	result := dataloader.PromiseAll(tasks...)
@@ -126,11 +117,11 @@ func randSleep() {
 	time.Sleep(duration)
 }
 
-func fetchOrders(keys []string) (map[string]dataloader.Result[Order], error) {
+func fetchOrders(keys []string) (map[string]*dataloader.Result[Order], error) {
 	fmt.Println("order keys:", keys)
 	randSleep()
 
-	result := make(map[string]dataloader.Result[Order])
+	result := make(map[string]*dataloader.Result[Order])
 	for i, key := range keys {
 		result[key] = dataloader.Resolve(Order{
 			ID:         key,
@@ -141,11 +132,11 @@ func fetchOrders(keys []string) (map[string]dataloader.Result[Order], error) {
 	return result, nil
 }
 
-func fetchAddresses(keys []string) (map[string]dataloader.Result[Address], error) {
+func fetchAddresses(keys []string) (map[string]*dataloader.Result[Address], error) {
 	fmt.Println("address keys:", keys)
 	randSleep()
 
-	result := make(map[string]dataloader.Result[Address])
+	result := make(map[string]*dataloader.Result[Address])
 	for _, key := range keys {
 		result[key] = dataloader.Resolve(Address{
 			ID:        "address-" + key,
@@ -156,11 +147,11 @@ func fetchAddresses(keys []string) (map[string]dataloader.Result[Address], error
 	return result, nil
 }
 
-func fetchShipments(keys []int64) (map[int64]dataloader.Result[Shipment], error) {
+func fetchShipments(keys []int64) (map[int64]*dataloader.Result[Shipment], error) {
 	fmt.Println("shipment keys:", keys)
 	randSleep()
 
-	result := make(map[int64]dataloader.Result[Shipment])
+	result := make(map[int64]*dataloader.Result[Shipment])
 	for _, key := range keys {
 		result[key] = dataloader.Resolve(Shipment{
 			ID: key,
@@ -170,11 +161,11 @@ func fetchShipments(keys []int64) (map[int64]dataloader.Result[Shipment], error)
 	return result, nil
 }
 
-func fetchCountries(keys []string) (map[string]dataloader.Result[Country], error) {
+func fetchCountries(keys []string) (map[string]*dataloader.Result[Country], error) {
 	fmt.Println("country keys:", keys)
 	randSleep()
 
-	result := make(map[string]dataloader.Result[Country])
+	result := make(map[string]*dataloader.Result[Country])
 	for _, key := range keys {
 		result[key] = dataloader.Resolve(Country{ID: key})
 	}

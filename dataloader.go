@@ -280,3 +280,13 @@ func PromiseAll[T any](tasks ...Task[T]) []Result[T] {
 
 	return result
 }
+
+func Future[T any](task Task[T]) chan *Result[T] {
+	ch := make(chan *Result[T], 1)
+
+	go func() {
+		ch <- task()
+	}()
+
+	return ch
+}
