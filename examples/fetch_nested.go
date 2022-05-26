@@ -9,41 +9,6 @@ import (
 	"github.com/alextanhongpin/dataloader"
 )
 
-func fetchOrderAggregate(loader *Loader, orderID string) *OrderAggregate {
-	var orderAggregate OrderAggregate
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-
-		if order, err := loader.Order.Load(orderID).Unwrap(); err == nil {
-			orderAggregate.Order = &order
-
-			if shipment, err := loader.Shipment.Load(order.ShipmentID).Unwrap(); err == nil {
-				orderAggregate.Shipment = &shipment
-			}
-		}
-	}()
-
-	go func() {
-		defer wg.Done()
-
-		if address, err := loader.Address.Load(orderID).Unwrap(); err == nil {
-			orderAggregate.Address = &address
-
-			if country, err := loader.Country.Load(address.CountryID).Unwrap(); err == nil {
-				orderAggregate.Address.Country = &country
-			}
-		}
-	}()
-
-	wg.Wait()
-
-	return &orderAggregate
-}
-
 func main() {
 	loader, flush := NewLoader()
 	defer flush()
@@ -55,7 +20,7 @@ func main() {
 	for i := 0; i < n; i++ {
 		i := i
 		tasks[i] = func() *dataloader.Result[OrderAggregate] {
-			orderAggregate := fetchOrderAggregate(loader, fmt.Sprintf("order-%d", i))
+			orderAggregate := NewOrderAggregateResolver(loader, fmt.Sprintf("order-%d", i)).LoadAll().Wait()
 			return dataloader.Resolve(*orderAggregate)
 		}
 	}
@@ -78,7 +43,65 @@ func main() {
 			fmt.Printf("failed: %s", res.Error())
 		}
 	}
+}
 
+type OrderAggregateResolver struct {
+	loader         *Loader
+	orderID        string
+	orderAggregate *OrderAggregate
+	wg             sync.WaitGroup
+}
+
+func NewOrderAggregateResolver(loader *Loader, orderID string) *OrderAggregateResolver {
+	return &OrderAggregateResolver{
+		loader:         loader,
+		orderID:        orderID,
+		orderAggregate: new(OrderAggregate),
+	}
+}
+
+func (r *OrderAggregateResolver) LoadOrder() {
+	r.wg.Add(1)
+
+	go func() {
+		defer r.wg.Done()
+
+		if order, err := r.loader.Order.Load(r.orderID).Unwrap(); err == nil {
+			r.orderAggregate.Order = &order
+
+			if shipment, err := r.loader.Shipment.Load(order.ShipmentID).Unwrap(); err == nil {
+				r.orderAggregate.Shipment = &shipment
+			}
+		}
+	}()
+}
+
+func (r *OrderAggregateResolver) LoadShipment() {
+	r.wg.Add(1)
+
+	go func() {
+		defer r.wg.Done()
+
+		if address, err := r.loader.Address.Load(r.orderID).Unwrap(); err == nil {
+			r.orderAggregate.Address = &address
+
+			if country, err := r.loader.Country.Load(address.CountryID).Unwrap(); err == nil {
+				r.orderAggregate.Address.Country = &country
+			}
+		}
+	}()
+}
+
+func (r *OrderAggregateResolver) LoadAll() *OrderAggregateResolver {
+	r.LoadOrder()
+	r.LoadShipment()
+	return r
+}
+
+func (r *OrderAggregateResolver) Wait() *OrderAggregate {
+	r.wg.Wait()
+
+	return r.orderAggregate
 }
 
 type Country struct {
