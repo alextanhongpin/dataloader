@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/alextanhongpin/dataloader"
@@ -26,12 +27,12 @@ type Status struct {
 }
 
 // Using *Account here would allow overriding the Status pointer.
-func fetchAccounts(keys []string) (map[string]*dataloader.Result[Account], error) {
+func fetchAccounts(ctx context.Context, keys []string) (map[string]Account, error) {
 	fmt.Println("keys", keys)
 
-	m := make(map[string]*dataloader.Result[Account])
+	m := make(map[string]Account)
 	for _, k := range keys {
-		m[k] = dataloader.Resolve(Account{
+		m[k] = (Account{
 			ID: fmt.Sprint(k),
 			Data: map[string]string{
 				"id": fmt.Sprint(k),
@@ -46,12 +47,12 @@ func fetchAccounts(keys []string) (map[string]*dataloader.Result[Account], error
 }
 
 func main() {
-	dl, flush := dataloader.New(fetchAccounts)
+	ctx := context.Background()
+	dl, flush := dataloader.New(ctx, fetchAccounts)
 	defer flush()
 
 	fmt.Println("fetch 1")
-	result := dl.Load("account-1")
-	account, err := result.Unwrap()
+	account, err := dl.Load("account-1")
 	if err != nil {
 		panic(err)
 	}
@@ -65,8 +66,7 @@ func main() {
 
 	fmt.Println()
 	fmt.Println("fetch 2")
-	result = dl.Load("account-1")
-	account, err = result.Unwrap()
+	account, err = dl.Load("account-1")
 	if err != nil {
 		panic(err)
 	}
@@ -75,8 +75,7 @@ func main() {
 
 	fmt.Println()
 	fmt.Println("fetch 3")
-	result = dl.Load("account-1")
-	account, err = result.Unwrap()
+	account, err = dl.Load("account-1")
 	if err != nil {
 		panic(err)
 	}

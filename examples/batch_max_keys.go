@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -9,20 +10,22 @@ import (
 	"github.com/alextanhongpin/dataloader"
 )
 
-func fetchNumber(keys []int) (map[int]dataloader.Result[string], error) {
+func fetchNumber(ctx context.Context, keys []int) (map[int]string, error) {
 	fmt.Println("resolving", len(keys), "keys")
 	fmt.Println("keys:", keys)
 
-	result := make(map[int]dataloader.Result[string])
+	result := make(map[int]string)
 	for _, key := range keys {
-		result[key] = dataloader.Resolve(fmt.Sprint(key))
+		result[key] = fmt.Sprint(key)
 	}
 
 	return result, nil
 }
 
 func main() {
+	ctx := context.Background()
 	dld, flush := dataloader.New(
+		ctx,
 		fetchNumber,
 		dataloader.WithBatchMaxKeys[int, string](20),
 	)
@@ -44,12 +47,11 @@ func main() {
 			}
 
 			num := rand.Intn(n)
-			result := dld.Load(num)
-			fmt.Println("fetched")
-			if result.Ok() {
-				fmt.Println(result.Data())
+			res, err := dld.Load(num)
+			if err != nil {
+				fmt.Println("failed:", err)
 			} else {
-				fmt.Println(result.Error())
+				fmt.Println("success:", res)
 			}
 		}()
 	}

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -17,9 +16,6 @@ type User struct {
 
 func fetchUsers(ctx context.Context, keys []string) (map[string]User, error) {
 	fmt.Println("keys", keys)
-	if len(keys) == 1 {
-		return nil, errors.New("intended error")
-	}
 
 	m := make(map[string]User)
 	for _, k := range keys {
@@ -32,9 +28,12 @@ func fetchUsers(ctx context.Context, keys []string) (map[string]User, error) {
 func main() {
 	ctx := context.Background()
 	dl, flush := dataloader.New(ctx, fetchUsers)
-	defer flush()
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		flush()
+	}()
 
-	n := 1_000
+	n := 100
 	addDelay := true
 
 	var wg sync.WaitGroup
