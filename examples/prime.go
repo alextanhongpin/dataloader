@@ -1,45 +1,47 @@
 package main
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/alextanhongpin/dataloader"
 )
 
-func fetchNumber42(keys []int) (map[int]dataloader.Result[string], error) {
+func fetchNumber42(ctx context.Context, keys []int) (map[int]string, error) {
 	fmt.Println("keys", keys)
 
-	res := make(map[int]dataloader.Result[string])
+	res := make(map[int]string)
 	for _, k := range keys {
-		res[k] = dataloader.Resolve[string](fmt.Sprintf("number-%d", k))
+		res[k] = string(fmt.Sprintf("number-%d", k))
 	}
 
 	return res, nil
 }
 
 func main() {
-	dl, flush := dataloader.New(fetchNumber42)
+	ctx := context.Background()
+	dl, flush := dataloader.New(ctx, fetchNumber42)
 	defer flush()
 
 	dl.Prime(42, "the meaning of life")
 
 	{
 		// Not in cache yet.
-		result := dl.Load(41)
-		if result.Ok() {
-			fmt.Println(result.Data())
+		res, err := dl.Load(41)
+		if err != nil {
+			fmt.Println("failed:", err)
 		} else {
-			fmt.Println(result.Error())
+			fmt.Println("success:", res)
 		}
 	}
 
 	{
 		// Already in cache.
-		result := dl.Load(42)
-		if result.Ok() {
-			fmt.Println(result.Data())
+		res, err := dl.Load(42)
+		if err != nil {
+			fmt.Println("failed:", err)
 		} else {
-			fmt.Println(result.Error())
+			fmt.Println("success:", res)
 		}
 	}
 }

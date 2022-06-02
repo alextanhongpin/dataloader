@@ -2,10 +2,8 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"math/rand"
-	"runtime"
 	"sync"
 	"time"
 
@@ -18,10 +16,6 @@ type User struct {
 
 func fetchUsers(ctx context.Context, keys []string) (map[string]User, error) {
 	fmt.Println("keys", keys)
-	if len(keys) == 1 {
-		return nil, errors.New("intended error")
-	}
-	time.Sleep(1 * time.Second)
 
 	m := make(map[string]User)
 	for _, k := range keys {
@@ -32,17 +26,12 @@ func fetchUsers(ctx context.Context, keys []string) (map[string]User, error) {
 }
 
 func main() {
-	defer func(start time.Time) {
-		fmt.Println(time.Since(start))
-	}(time.Now())
-
 	ctx := context.Background()
-	dl, flush := dataloader.New(ctx, fetchUsers,
-		dataloader.WithBatchMaxKeys[string, User](1_000),
-		dataloader.WithBatchMaxWorker[string, User](runtime.NumCPU()),
-	)
-
-	defer flush()
+	dl, flush := dataloader.New(ctx, fetchUsers)
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		flush()
+	}()
 
 	n := 1_000
 	addDelay := true
@@ -55,7 +44,7 @@ func main() {
 			defer wg.Done()
 
 			if addDelay {
-				sleep := time.Duration(rand.Intn(1_000)) * time.Millisecond
+				sleep := time.Duration(rand.Intn(2_000)) * time.Millisecond
 				time.Sleep(sleep)
 			}
 
@@ -63,9 +52,9 @@ func main() {
 
 			res, err := dl.Load(key)
 			if err != nil {
-				fmt.Println("failed", err)
+				fmt.Println("failed:", err, key)
 			} else {
-				fmt.Println("success", res)
+				fmt.Println("success:", res, key)
 			}
 		}(i)
 	}

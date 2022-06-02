@@ -1,152 +1,165 @@
 package dataloader
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"sync"
 	"time"
 )
 
-var (
-	ErrRejected = errors.New("rejected")
-	ErrNoResult = errors.New("no result")
-)
-
-type Result[T any] struct {
-	data  T
-	err   error
-	dirty bool
-}
-
-func Resolve[T any](t T) *Result[T] {
-	return &Result[T]{
-		data:  t,
-		dirty: true,
-	}
-}
-
-func Reject[T any](err error) *Result[T] {
-	return &Result[T]{
-		err:   err,
-		dirty: true,
-	}
-}
-
-func (r *Result[T]) Unwrap() (t T, err error) {
-	if r.IsZero() {
-		return t, ErrNoResult
-	}
-	return r.data, r.err
-}
-
-func (r *Result[T]) Data() (t T) {
-	if r.IsZero() {
-		return
-	}
-
-	return r.data
-}
-
-func (r *Result[T]) Error() error {
-	if r.IsZero() {
-		return ErrNoResult
-	}
-
-	return r.err
-}
-
-func (r *Result[T]) Ok() bool {
-	return r.Error() == nil
-}
-
-func (r *Result[T]) IsZero() bool {
-	return r == nil || !r.dirty
-}
-
 type Dataloader[K comparable, T any] struct {
-	data     map[K]*Result[T]
-	cond     sync.Cond
-	done     chan bool
-	init     sync.Once
-	debounce chan struct{}
+	ch   chan K
+	cond sync.Cond
+	ctx  context.Context
+	data map[K]*Result[T]
+	done chan bool
+	init sync.Once
+	wg   sync.WaitGroup
 
-	cache         map[K]bool
-	batchMaxKeys  int
+	// How many keys gathered before the batchFn executes.
+	batchMaxKeys int
+
+	// How long elapsed before the batchFn executes.
 	batchDuration time.Duration
-	batchFn       func(keys []K) (map[K]*Result[T], error)
-	start         time.Time
+
+	// How many concurrent batchFn is allowed to run.
+	batchMaxWorker chan struct{}
+	batchFn        BatchFunc[K, T]
 }
 
-type Option[K comparable, T any] func(*Dataloader[K, T]) *Dataloader[K, T]
+type BatchFunc[K comparable, T any] func(ctx context.Context, keys []K) (map[K]T, error)
 
-func WithBatchDuration[K comparable, T any](duration time.Duration) Option[K, T] {
-	return func(dl *Dataloader[K, T]) *Dataloader[K, T] {
-		dl.batchDuration = duration
-
-		return dl
-	}
-}
-
-func WithBatchMaxKeys[K comparable, T any](size int) Option[K, T] {
-	return func(dl *Dataloader[K, T]) *Dataloader[K, T] {
-		dl.batchMaxKeys = size
-
-		return dl
-	}
-}
-
-func New[K comparable, T any](batchFn func(keys []K) (map[K]*Result[T], error), options ...Option[K, T]) (*Dataloader[K, T], func()) {
-	d := &Dataloader[K, T]{
-		data:          make(map[K]*Result[T]),
-		cond:          sync.Cond{L: &sync.Mutex{}},
-		done:          make(chan bool),
-		cache:         make(map[K]bool),
-		debounce:      make(chan struct{}),
-		batchDuration: 16 * time.Millisecond,
-		batchMaxKeys:  0,
-		batchFn:       batchFn,
-		start:         time.Now(),
+func New[K comparable, T any](ctx context.Context, batchFn BatchFunc[K, T], options ...Option[K, T]) (*Dataloader[K, T], func()) {
+	dataloader := &Dataloader[K, T]{
+		data:           make(map[K]*Result[T]),
+		cond:           sync.Cond{L: &sync.Mutex{}},
+		done:           make(chan bool),
+		ch:             make(chan K),
+		ctx:            ctx,
+		batchDuration:  16 * time.Millisecond,
+		batchMaxKeys:   0,
+		batchMaxWorker: make(chan struct{}, 1),
+		batchFn:        batchFn,
 	}
 
 	for _, opt := range options {
-		opt(d)
+		opt(dataloader)
 	}
 
 	var once sync.Once
-	return d, func() {
+	return dataloader, func() {
+		dataloader.init.Do(func() {})
+
 		once.Do(func() {
-			close(d.done)
+			close(dataloader.done)
+			dataloader.wg.Wait()
 		})
 	}
 }
 
-func (l *Dataloader[K, T]) keysToFetch() []K {
-	var keys []K
+func (l *Dataloader[K, T]) Load(key K) (t T, err error) {
+	res := l.load(key)
+	if !res.IsZero() {
+		return res.Unwrap()
+	}
+
+	return l.wait(key)
+}
+
+func (l *Dataloader[K, T]) LoadMany(keys []K) (map[K]T, error) {
+	for _, key := range keys {
+		if res := l.load(key); !res.IsZero() {
+			if err := res.Error(); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	result := make(map[K]T, len(keys))
+
+	for _, key := range keys {
+		res, err := l.wait(key)
+		if err != nil {
+			return nil, err
+		}
+
+		result[key] = res
+	}
+
+	return result, nil
+}
+
+func (l *Dataloader[K, T]) Prime(key K, res T) {
+	l.cond.L.Lock()
+
+	val := new(Result[T])
+	val.Resolve(res)
+
+	l.data[key] = val
+
+	l.cond.L.Unlock()
+	l.cond.Broadcast()
+}
+
+func (l *Dataloader[K, T]) wait(key K) (T, error) {
+	l.cond.L.Lock()
+	for l.pending(key) {
+		l.cond.Wait()
+	}
+
+	res := l.data[key]
+	l.cond.L.Unlock()
+
+	return res.Unwrap()
+}
+
+func (l *Dataloader[K, T]) load(key K) *Result[T] {
+	l.init.Do(func() {
+		select {
+		case <-l.done:
+			return
+		default:
+			// Lazily create a background goroutine.
+			l.loopAsync()
+		}
+	})
 
 	l.cond.L.Lock()
-	n := l.batchMaxKeys
-	for key := range l.data {
-		if l.cache[key] {
-			continue
-		}
-		keys = append(keys, key)
-		l.cache[key] = true
-		n--
-		if n == 0 {
-			break
-		}
+	res, found := l.data[key]
+	if !found {
+		l.data[key] = new(Result[T])
 	}
 	l.cond.L.Unlock()
 
-	return keys
+	if found {
+		return res
+	}
+
+	// If it's not yet set, then set it.
+	// Otherwise, the fetching might not be completed yet.
+	if !found {
+		select {
+		case <-l.done:
+			l.cond.L.Lock()
+			l.data[key].Reject(ErrTerminated)
+			l.cond.L.Unlock()
+
+			return nil
+		case l.ch <- key:
+		}
+	}
+
+	return nil
 }
 
-func (l *Dataloader[K, T]) batch() {
-	keys := l.keysToFetch()
-	if len(keys) == 0 {
-		return
-	}
-	res, err := l.batchFn(keys)
+func (l *Dataloader[K, T]) pending(key K) bool {
+	res, ok := l.data[key]
+
+	return !ok || res.IsZero()
+}
+
+func (l *Dataloader[K, T]) batch(ctx context.Context, keys []K) {
+	res, err := l.batchFn(ctx, keys)
 
 	l.cond.L.Lock()
 
@@ -154,16 +167,16 @@ func (l *Dataloader[K, T]) batch() {
 		// If there's an error, set all results to the error.
 		// Otherwise, the sync.Cond will wait forever.
 		if err != nil {
-			l.data[key] = Reject[T](err)
+			l.data[key].Reject(err)
 
 			continue
 		}
 
 		val, ok := res[key]
 		if !ok {
-			l.data[key] = Reject[T](fmt.Errorf("%w: %v", ErrRejected, key))
+			l.data[key].Reject(fmt.Errorf("%w: %v", ErrKeyNotFound, key))
 		} else {
-			l.data[key] = val
+			l.data[key].Resolve(val)
 		}
 	}
 
@@ -171,122 +184,80 @@ func (l *Dataloader[K, T]) batch() {
 	l.cond.Broadcast()
 }
 
+func (l *Dataloader[K, T]) batchAsync(ctx context.Context, keys []K) {
+	if len(keys) == 0 {
+		return
+	}
+
+	l.wg.Add(1)
+	l.batchMaxWorker <- struct{}{}
+
+	go func(keys []K) {
+		defer func() {
+			<-l.batchMaxWorker
+			l.wg.Done()
+		}()
+
+		l.batch(ctx, keys)
+	}(keys)
+}
+
 func (l *Dataloader[K, T]) loop() {
-	t := time.NewTicker(l.batchDuration)
-	defer t.Stop()
+	ticker := time.NewTicker(l.batchDuration)
+	defer ticker.Stop()
+
+	ctx, cancel := context.WithCancel(l.ctx)
+	defer cancel()
+
+	keys := make([]K, 0, l.batchMaxKeys)
 
 	for {
 		select {
 		case <-l.done:
+			l.cond.L.Lock()
+
+			for _, key := range keys {
+				_, found := l.data[key]
+				if found {
+					l.data[key].Reject(ErrTerminated)
+					continue
+				}
+				res := new(Result[T])
+				res.Reject(ErrTerminated)
+
+				l.data[key] = res
+			}
+
+			for key := range l.data {
+				l.data[key].Reject(ErrTerminated)
+			}
+
+			l.cond.L.Unlock()
+			l.cond.Broadcast()
+
 			return
-		case <-l.debounce:
-			t.Reset(l.batchDuration)
-		case <-t.C:
-			l.batch()
+		case <-ticker.C:
+			l.batchAsync(ctx, keys)
+			keys = nil
+		case key := <-l.ch:
+			ticker.Reset(l.batchDuration)
+
+			keys = append(keys, key)
+			if l.batchMaxKeys == 0 || len(keys) < l.batchMaxKeys {
+				continue
+			}
+
+			l.batchAsync(ctx, keys)
+			keys = nil
 		}
 	}
 }
 
-func (l *Dataloader[K, T]) LoadMany(keys []K) map[K]*Result[T] {
-	tasks := make([]Task[T], len(keys))
-
-	for i, key := range keys {
-		key := key
-		tasks[i] = func() *Result[T] {
-			return l.Load(key)
-		}
-	}
-
-	out := PromiseAll(tasks...)
-
-	res := make(map[K]*Result[T])
-	for i, key := range keys {
-		res[key] = &out[i]
-	}
-
-	return res
-}
-
-func (l *Dataloader[K, T]) Load(key K) *Result[T] {
-	l.init.Do(func() {
-		// Lazily create a background goroutine.
-		go l.loop()
-	})
-
-	l.cond.L.Lock()
-	res, ok := l.data[key]
-	l.cond.L.Unlock()
-
-	if ok && !res.IsZero() {
-		return res
-	}
-
-	// If it's not yet set, then set it.
-	// Otherwise, the fetching might not be completed yet.
-	if !ok {
-		l.cond.L.Lock()
-		l.data[key] = res
-		l.cond.L.Unlock()
-
-		l.debounce <- struct{}{}
-	}
-
-	l.cond.L.Lock()
-	for l.isFetching(key) {
-		l.cond.Wait()
-	}
-
-	res = l.data[key]
-	l.cond.L.Unlock()
-
-	return res
-}
-
-func (l *Dataloader[K, T]) Prime(key K, data T) {
-	l.cond.L.Lock()
-	l.data[key] = Resolve(data)
-	l.cache[key] = true
-	l.cond.L.Unlock()
-	l.cond.Broadcast()
-}
-
-func (l *Dataloader[K, T]) isFetching(key K) bool {
-	res, ok := l.data[key]
-
-	return !ok || res.IsZero()
-}
-
-type Task[T any] func() *Result[T]
-
-func PromiseAll[T any](tasks ...Task[T]) []Result[T] {
-	if len(tasks) == 0 {
-		return nil
-	}
-
-	var wg sync.WaitGroup
-	wg.Add(len(tasks))
-
-	result := make([]Result[T], len(tasks))
-
-	for i, task := range tasks {
-		go func(pos int, fn Task[T]) {
-			defer wg.Done()
-
-			result[pos] = *fn()
-		}(i, task)
-	}
-
-	wg.Wait()
-
-	return result
-}
-
-func Future[T any](task Task[T]) chan *Result[T] {
-	ch := make(chan *Result[T], 1)
+func (l *Dataloader[K, T]) loopAsync() {
+	l.wg.Add(1)
 
 	go func() {
-		ch <- task()
+		defer l.wg.Done()
+		l.loop()
 	}()
-
-	return ch
 }
