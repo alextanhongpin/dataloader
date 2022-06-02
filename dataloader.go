@@ -57,6 +57,107 @@ func New[K comparable, T any](ctx context.Context, batchFn BatchFunc[K, T], opti
 	}
 }
 
+func (l *Dataloader[K, T]) Load(key K) (t T, err error) {
+	res := l.load(key)
+	if !res.IsZero() {
+		return res.Unwrap()
+	}
+
+	return l.wait(key)
+}
+
+func (l *Dataloader[K, T]) LoadMany(keys []K) (map[K]T, error) {
+	for _, key := range keys {
+		if res := l.load(key); !res.IsZero() {
+			if err := res.Error(); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	result := make(map[K]T, len(keys))
+
+	for _, key := range keys {
+		res, err := l.wait(key)
+		if err != nil {
+			return nil, err
+		}
+
+		result[key] = res
+	}
+
+	return result, nil
+}
+
+func (l *Dataloader[K, T]) Prime(key K, res T) {
+	l.cond.L.Lock()
+
+	val := new(Result[T])
+	val.Resolve(res)
+
+	l.data[key] = val
+
+	l.cond.L.Unlock()
+	l.cond.Broadcast()
+}
+
+func (l *Dataloader[K, T]) wait(key K) (T, error) {
+	l.cond.L.Lock()
+	for l.pending(key) {
+		l.cond.Wait()
+	}
+
+	res := l.data[key]
+	l.cond.L.Unlock()
+
+	return res.Unwrap()
+}
+
+func (l *Dataloader[K, T]) load(key K) *Result[T] {
+	l.init.Do(func() {
+		select {
+		case <-l.done:
+			return
+		default:
+			// Lazily create a background goroutine.
+			l.loopAsync()
+		}
+	})
+
+	l.cond.L.Lock()
+	res, found := l.data[key]
+	if !found {
+		l.data[key] = new(Result[T])
+	}
+	l.cond.L.Unlock()
+
+	if found {
+		return res
+	}
+
+	// If it's not yet set, then set it.
+	// Otherwise, the fetching might not be completed yet.
+	if !found {
+		select {
+		case <-l.done:
+			l.cond.L.Lock()
+			l.data[key].Reject(ErrTerminated)
+			l.cond.L.Unlock()
+
+			return nil
+		case l.ch <- key:
+		}
+	}
+
+	return nil
+}
+
+func (l *Dataloader[K, T]) pending(key K) bool {
+	res, ok := l.data[key]
+
+	return !ok || res.IsZero()
+}
+
 func (l *Dataloader[K, T]) batch(ctx context.Context, keys []K) {
 	res, err := l.batchFn(ctx, keys)
 
@@ -115,6 +216,18 @@ func (l *Dataloader[K, T]) loop() {
 		case <-l.done:
 			l.cond.L.Lock()
 
+			for _, key := range keys {
+				_, found := l.data[key]
+				if found {
+					l.data[key].Reject(ErrTerminated)
+					continue
+				}
+				res := new(Result[T])
+				res.Reject(ErrTerminated)
+
+				l.data[key] = res
+			}
+
 			for key := range l.data {
 				l.data[key].Reject(ErrTerminated)
 			}
@@ -147,127 +260,4 @@ func (l *Dataloader[K, T]) loopAsync() {
 		defer l.wg.Done()
 		l.loop()
 	}()
-}
-
-func (l *Dataloader[K, T]) Load(key K) (T, error) {
-	l.init.Do(func() {
-		select {
-		case <-l.done:
-			return
-		default:
-			// Lazily create a background goroutine.
-			l.loopAsync()
-		}
-	})
-
-	select {
-	case <-l.done:
-		res := new(Result[T])
-		res.Reject(ErrTerminated)
-
-		return res.Unwrap()
-	default:
-	}
-
-	l.cond.L.Lock()
-	res, found := l.data[key]
-	l.cond.L.Unlock()
-
-	if found && !res.IsZero() {
-		return res.Unwrap()
-	}
-
-	// If it's not yet set, then set it.
-	// Otherwise, the fetching might not be completed yet.
-	if !found {
-		l.cond.L.Lock()
-		l.data[key] = new(Result[T])
-		l.cond.L.Unlock()
-
-		l.ch <- key
-	}
-
-	l.cond.L.Lock()
-	for l.pending(key) {
-		l.cond.Wait()
-	}
-
-	res = l.data[key]
-	l.cond.L.Unlock()
-
-	return res.Unwrap()
-}
-
-func (l *Dataloader[K, T]) LoadMany(keys []K) (map[K]T, error) {
-	keys = dedup(keys)
-	result := make([]*Result[T], len(keys))
-
-	var wg sync.WaitGroup
-	wg.Add(len(keys))
-	fmt.Println("keys to fetch", keys)
-
-	for i, key := range keys {
-
-		go func(i int, key K) {
-			defer wg.Done()
-
-			t := new(Result[T])
-			res, err := l.Load(key)
-			if err != nil {
-				t.Reject(err)
-			} else {
-				t.Resolve(res)
-			}
-
-			result[i] = t
-		}(i, key)
-	}
-
-	wg.Wait()
-
-	res := make(map[K]T, len(result))
-	for i, key := range keys {
-		t, err := result[i].Unwrap()
-		if err != nil {
-			return nil, err
-		}
-
-		res[key] = t
-	}
-
-	return res, nil
-}
-
-func (l *Dataloader[K, T]) Prime(key K, res T) {
-	l.cond.L.Lock()
-
-	val := new(Result[T])
-	val.Resolve(res)
-
-	l.data[key] = val
-
-	l.cond.L.Unlock()
-	l.cond.Broadcast()
-}
-
-func (l *Dataloader[K, T]) pending(key K) bool {
-	res, ok := l.data[key]
-
-	return !ok || res.IsZero()
-}
-
-func dedup[T comparable](items []T) []T {
-	result := make(map[T]struct{}, len(items))
-	unique := make([]T, 0, len(result))
-
-	for _, item := range items {
-		_, found := result[item]
-		if found {
-			continue
-		}
-		result[item] = struct{}{}
-		unique = append(unique, item)
-	}
-
-	return unique
 }

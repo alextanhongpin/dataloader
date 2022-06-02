@@ -33,7 +33,7 @@ func main() {
 		flush()
 	}()
 
-	n := 100
+	n := 1_000
 	addDelay := true
 
 	var wg sync.WaitGroup
@@ -44,7 +44,7 @@ func main() {
 			defer wg.Done()
 
 			if addDelay {
-				sleep := time.Duration(rand.Intn(1_000)) * time.Millisecond
+				sleep := time.Duration(rand.Intn(2_000)) * time.Millisecond
 				time.Sleep(sleep)
 			}
 
@@ -52,9 +52,9 @@ func main() {
 
 			res, err := dl.Load(key)
 			if err != nil {
-				fmt.Println("failed", err)
+				fmt.Println("failed:", err, key)
 			} else {
-				fmt.Println("success", res)
+				fmt.Println("success:", res, key)
 			}
 		}(i)
 	}

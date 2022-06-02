@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"runtime"
 	"sync"
 	"time"
 
@@ -20,6 +21,7 @@ func fetchUsers(ctx context.Context, keys []string) (map[string]User, error) {
 	if len(keys) == 1 {
 		return nil, errors.New("intended error")
 	}
+	time.Sleep(1 * time.Second)
 
 	m := make(map[string]User)
 	for _, k := range keys {
@@ -30,8 +32,16 @@ func fetchUsers(ctx context.Context, keys []string) (map[string]User, error) {
 }
 
 func main() {
+	defer func(start time.Time) {
+		fmt.Println(time.Since(start))
+	}(time.Now())
+
 	ctx := context.Background()
-	dl, flush := dataloader.New(ctx, fetchUsers)
+	dl, flush := dataloader.New(ctx, fetchUsers,
+		dataloader.WithBatchMaxKeys[string, User](1_000),
+		dataloader.WithBatchMaxWorker[string, User](runtime.NumCPU()),
+	)
+
 	defer flush()
 
 	n := 1_000
