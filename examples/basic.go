@@ -1,22 +1,3 @@
-# dataloader
-
-Dataloader implemented with golang. Also see the alternative implementation without sync.Cond [here](https://github.com/alextanhongpin/dataloader2).
-
-
-## Installation
-
-```
-go get github.com/alextanhongpin/dataloader
-```
-
-
-## Usage
-
-In the example below, we run two goroutines to fetch user with the id `1` and `2` respectively. Without dataloader, the application would have performed 4 calls to the database.
-
-With dataloader, only 1 call will be made to fetch the users.
-
-```go
 package main
 
 import (
@@ -81,4 +62,3 @@ func main() {
 
 	wg.Wait()
 }
-```
