@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+const defaultBatchDuration = 16 * time.Millisecond
+
 type Dataloader[K comparable, T any] struct {
 	ch   chan K
 	cond sync.Cond
@@ -36,7 +38,7 @@ func New[K comparable, T any](ctx context.Context, batchFn BatchFunc[K, T], opti
 		done:           make(chan bool),
 		ch:             make(chan K),
 		ctx:            ctx,
-		batchDuration:  16 * time.Millisecond,
+		batchDuration:  defaultBatchDuration,
 		batchMaxKeys:   0,
 		batchMaxWorker: make(chan struct{}, 1),
 		batchFn:        batchFn,
@@ -58,8 +60,7 @@ func New[K comparable, T any](ctx context.Context, batchFn BatchFunc[K, T], opti
 }
 
 func (l *Dataloader[K, T]) Load(key K) (t T, err error) {
-	res := l.load(key)
-	if !res.IsZero() {
+	if res := l.load(key); !res.IsZero() {
 		return res.Unwrap()
 	}
 
@@ -67,17 +68,25 @@ func (l *Dataloader[K, T]) Load(key K) (t T, err error) {
 }
 
 func (l *Dataloader[K, T]) LoadMany(keys []K) (map[K]T, error) {
-	for _, key := range keys {
-		if res := l.load(key); !res.IsZero() {
-			if err := res.Error(); err != nil {
-				return nil, err
-			}
-		}
-	}
-
 	result := make(map[K]T, len(keys))
 
 	for _, key := range keys {
+		if res := l.load(key); !res.IsZero() {
+			t, err := res.Unwrap()
+			if err != nil {
+				return nil, err
+			}
+
+			result[key] = t
+		}
+	}
+
+	for _, key := range keys {
+		_, ok := result[key]
+		if ok {
+			continue
+		}
+
 		res, err := l.wait(key)
 		if err != nil {
 			return nil, err
@@ -92,10 +101,7 @@ func (l *Dataloader[K, T]) LoadMany(keys []K) (map[K]T, error) {
 func (l *Dataloader[K, T]) Prime(key K, res T) {
 	l.cond.L.Lock()
 
-	val := new(Result[T])
-	val.Resolve(res)
-
-	l.data[key] = val
+	l.data[key] = new(Result[T]).resolve(res)
 
 	l.cond.L.Unlock()
 	l.cond.Broadcast()
@@ -137,19 +143,16 @@ func (l *Dataloader[K, T]) load(key K) *Result[T] {
 
 	// If it's not yet set, then set it.
 	// Otherwise, the fetching might not be completed yet.
-	if !found {
-		select {
-		case <-l.done:
-			l.cond.L.Lock()
-			l.data[key].Reject(ErrTerminated)
-			l.cond.L.Unlock()
+	select {
+	case <-l.done:
+		l.cond.L.Lock()
+		res = l.data[key].reject(ErrTerminated)
+		l.cond.L.Unlock()
 
-			return nil
-		case l.ch <- key:
-		}
+		return res
+	case l.ch <- key:
+		return nil
 	}
-
-	return nil
 }
 
 func (l *Dataloader[K, T]) pending(key K) bool {
@@ -167,16 +170,16 @@ func (l *Dataloader[K, T]) batch(ctx context.Context, keys []K) {
 		// If there's an error, set all results to the error.
 		// Otherwise, the sync.Cond will wait forever.
 		if err != nil {
-			l.data[key].Reject(err)
+			l.data[key].reject(err)
 
 			continue
 		}
 
 		val, ok := res[key]
 		if !ok {
-			l.data[key].Reject(fmt.Errorf("%w: %v", ErrKeyNotFound, key))
+			l.data[key].reject(fmt.Errorf("%w: %v", ErrKeyNotFound, key))
 		} else {
-			l.data[key].Resolve(val)
+			l.data[key].resolve(val)
 		}
 	}
 
@@ -219,17 +222,14 @@ func (l *Dataloader[K, T]) loop() {
 			for _, key := range keys {
 				_, found := l.data[key]
 				if found {
-					l.data[key].Reject(ErrTerminated)
+					l.data[key].reject(ErrTerminated)
 					continue
 				}
-				res := new(Result[T])
-				res.Reject(ErrTerminated)
-
-				l.data[key] = res
+				l.data[key] = new(Result[T]).reject(ErrTerminated)
 			}
 
 			for key := range l.data {
-				l.data[key].Reject(ErrTerminated)
+				l.data[key].reject(ErrTerminated)
 			}
 
 			l.cond.L.Unlock()

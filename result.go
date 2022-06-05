@@ -18,18 +18,22 @@ type Result[T any] struct {
 	once  sync.Once
 }
 
-func (r *Result[T]) Resolve(t T) {
+func (r *Result[T]) resolve(t T) *Result[T] {
 	r.once.Do(func() {
 		r.res = t
 		r.dirty = true
 	})
+
+	return r
 }
 
-func (r *Result[T]) Reject(err error) {
+func (r *Result[T]) reject(err error) *Result[T] {
 	r.once.Do(func() {
 		r.err = err
 		r.dirty = true
 	})
+
+	return r
 }
 
 func (r *Result[T]) Result() (t T) {
