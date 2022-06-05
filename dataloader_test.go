@@ -128,3 +128,34 @@ func TestFlush(t *testing.T) {
 		}
 	})
 }
+
+func TestMissingKey(t *testing.T) {
+	t.Parallel()
+
+	fetchNumber := func(ctx context.Context, keys []int) (map[int]string, error) {
+		return nil, nil
+	}
+
+	ctx := context.Background()
+
+	dl, flush := dataloader.New(ctx, fetchNumber)
+	t.Cleanup(flush)
+
+	t.Run("no key", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := dl.Load(42)
+		if exp, got := true, errors.Is(err, dataloader.ErrKeyNotFound); exp != got {
+			t.Fatalf("expected %v, got %v", exp, got)
+		}
+	})
+
+	t.Run("zero keys", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := dl.LoadMany(nil)
+		if exp, got := true, errors.Is(err, nil); exp != got {
+			t.Fatalf("expected %v, got %v", exp, got)
+		}
+	})
+}
