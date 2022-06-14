@@ -27,6 +27,19 @@ func TestLoad(t *testing.T) {
 	dl, flush := dataloader.New(ctx, fetchNumber)
 	t.Cleanup(flush)
 
+	t.Run("load thunk", func(t *testing.T) {
+		t.Parallel()
+
+		res, err := dl.LoadThunk(42).Unwrap()
+		if err != nil {
+			t.FailNow()
+		}
+
+		if exp, got := "42", res; exp != got {
+			t.Fatalf("expected %s, got %s", exp, got)
+		}
+	})
+
 	t.Run("load once", func(t *testing.T) {
 		t.Parallel()
 

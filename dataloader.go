@@ -59,9 +59,17 @@ func New[K comparable, T any](ctx context.Context, batchFn BatchFunc[K, T], opti
 	}
 }
 
-func (l *Dataloader[K, T]) Load(key K) (t T, err error) {
+func (l *Dataloader[K, T]) Load(key K) (T, error) {
 	if res := l.load(key); !res.IsZero() {
 		return res.Unwrap()
+	}
+
+	return l.wait(key).Unwrap()
+}
+
+func (l *Dataloader[K, T]) LoadThunk(key K) *Result[T] {
+	if res := l.load(key); !res.IsZero() {
+		return res
 	}
 
 	return l.wait(key)
@@ -87,7 +95,7 @@ func (l *Dataloader[K, T]) LoadMany(keys []K) (map[K]T, error) {
 			continue
 		}
 
-		res, err := l.wait(key)
+		res, err := l.wait(key).Unwrap()
 		if err != nil {
 			return nil, err
 		}
@@ -107,7 +115,7 @@ func (l *Dataloader[K, T]) Prime(key K, res T) {
 	l.cond.Broadcast()
 }
 
-func (l *Dataloader[K, T]) wait(key K) (T, error) {
+func (l *Dataloader[K, T]) wait(key K) *Result[T] {
 	l.cond.L.Lock()
 	for l.pending(key) {
 		l.cond.Wait()
@@ -116,7 +124,7 @@ func (l *Dataloader[K, T]) wait(key K) (T, error) {
 	res := l.data[key]
 	l.cond.L.Unlock()
 
-	return res.Unwrap()
+	return res
 }
 
 func (l *Dataloader[K, T]) load(key K) *Result[T] {
